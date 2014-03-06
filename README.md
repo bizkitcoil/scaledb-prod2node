@@ -6,5 +6,5 @@ Choose the hp-havana cloud on 13.5+ system<BR>
 <B>copy the pem file to the cloudify-overrides directory in addition to the upload directory</B><BR>
 The system consists of 6 machines.<BR>
 2 CAS, 2SLM and 2 MySQL nodes which run on mariadb<BR>
-To run tests on a fully operational system  or have further questions contact>\<BR>
+To run tests on a fully operational system  or have further questions contact></BR>
 info@bizkit.co.il for further details<BR>
