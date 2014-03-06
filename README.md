@@ -7,7 +7,7 @@ Choose the hp-havana cloud on 13.5+ system<BR>
 The system consists of 6 machines.<BR>
 2 CAS, 2SLM and 2 MySQL nodes which run on mariadb<BR>
 Since the default memory allocation is 15GB of memory, you will only be able to run the system with machines of size 101<BR>
-unless you request a larger memory allocation<BR>
+unless you request a larger memory allocation
 for 102 size machines you will need 6*4GB=24GB of memory<BR>
 for 103 size machines you will need 6*8GB=48GB of memory and so on <BR>
 To run tests on a fully operational system or if you have further questions contact<BR>
