@@ -1,0 +1,1300 @@
+#!/usr/bin/perl
+use Cwd;
+use Env qw(PATH HOME TERM @LD_LIBRARY_PATH);
+
+my $whoami=`whoami`;
+my $cur_dir=getcwd;
+my $manifest=$cur_dir.'/'.'iscale.manifest';
+my %IP=("PCAS1",'',"PCAS1M",'',"SLM1",'',"SLM2",'',"MySQLN1",'',"MySQLN2",'');
+#my %IP=("PCAS1",'',"PCAS2",'',"PCAS3",'',"PCAS4",'',"SLM1",'',"SLM2",'',"MySQLN1",'',"MySQLN2",'');
+#my @MACHINES=("PCAS","PCASM","SLM1","SLM2","MySQLN1","MySQLN2");
+#my @MACHINES=("PCAS","PCASM","SLM1","SLM2");
+my @MACHINES=("PCAS1","PCAS1M","SLM1","SLM2","MySQLN1","MySQLN2");
+$VERSION=" 1.6\n Supports mariadb , 50 million lines ycsb and UBUNTU and HP CLOUD version 13.5 and new opestack\n";
+$CAS_port=13306;
+$SLM_port=43306;
+$MySQLN_port=3306;
+$FIREWALL=1;  # 1 means on
+$CLOUDIFY_HP=1;   ## when using cloudify hp-havana cloud
+chdir "/home/$whoami";
+####Flags
+$ADD=0;
+$CHECK=0;
+$INSTALL=0;
+$CLEAN=0;
+$HPCLOUD=1;
+$CLEANDATA=1;   ###by default no need to clean data in shutdown
+$KILLALL=0;   
+$CLEANALL=0;   
+$INSTALL_ALL=0; # Install all services
+$START=0; # Start all services in the right order
+$START_ALL=0; # Start all services in the right order
+$STOP=0; # Stop services in the right order
+$UBUNTU=0;
+$mem=`free | egrep -i mem  | awk '{print $2}'`;chomp $mem;$mem=(split(' ',$mem))[1];$mem=int($mem/1000000);
+	if ($mem>=32) {$MSIZE=4;}   # 105 machine
+	if ($mem<32) {$MSIZE=3;}   #104 machine
+	if ($mem<16) {$MSIZE=2;}   #103 machine
+	if ($mem<8) {$MSIZE=1;}    #102 mahine
+	if ($mem<4) {$MSIZE=0;}  # 101 machine
+	
+@SINDEX=(80,300,700,1300,2200);
+@SDATA=(720,2500,5900,12000,24000);
+@SBLOB=(12,25,50,100,200);
+print "cur_dir=$cur_dir\n";
+print "Machine SIZE=".($MSIZE+101)."\n";
+$hostname='';
+$ip='';
+$ifconfig='/sbin/ifconfig';
+$my_ip=get_my_ip();
+$MinRepSize=350000;  # minimal repository size in KBytes
+$rep_dir='/tmp/scaledb-repository';
+$Abort="Aborting Installation\n";
+get_flag_info();
+  print "hostname=$hostname start=$START ip=$ip install=$INSTALL check=$CHECK clean=$CLEAN cleanall=$CLEANALL\n";  #DEBUG
+
+$AMZ=0;   # if not zero than it's ec2user amazon machine
+$REMOTE_USER='root';
+### test if uname command supported
+&test_cmd('uname');
+
+### Test for that it's a linux machine with 64 bit and kernel version 2.6.x+
+### also tests if it's an amazone image
+&test_req();
+
+### check if manifest file exists and if not than create it
+&check_manifest();
+
+my @cas_ips;
+foreach $machine(keys %IP){
+	print "machine=$machine\n";
+	next if($machine!~/PCAS(\d+)/);
+	my $num=$1-1;
+	$cas_ips[$num]=$IP{"$machine"};
+	$cas_ports.=$CAS_port.',';
+	}
+chop $cas_ips;
+chop $cas_ports;
+$cas_ips=join(',',@cas_ips);
+print "cas ips=$cas_ips cast ports=$cas_ports\n";
+
+### check database activation file
+&check_idb();
+### prepare local unix user if it doesn't exist yet
+&check_local_user();
+### check if this script was run as host installation
+&check_host();
+if ($START){
+	print "starting appropriate service on machine\n";
+	&start_service();
+	print "Started started appropriate service on machine\n";
+	exit(0);
+}
+
+if ($CLEANALL){
+	print "Killing processes and cleaning up files from all servers\n";
+	&cleanall();
+	print "Cleanup of files from all servers finished\n";
+	exit(0);
+}
+if ($KILLALL){
+	print "Killing all scaledb processes on all servers\n";
+	&killall();
+	print "Finished killing of scaledb processes on all servers\n";
+	exit(0);
+}
+if ($STARTALL){
+	print "starting all scaledb processes on all servers\n";
+	&start_all();
+	print "Started all of scaledb processes on all servers in the right order\n";
+	exit(0);
+}
+if ($STOP){
+	print "Stop all scaledb processes on all servers\n";
+	&stop();
+	print "Stopped all of scaledb processes on all servers in the right order\n";
+	exit(0);
+}
+if ($INSTALL_ALL){
+### create file repository of mysql, mariaDB and scaledb
+	&create_repos();
+### check ssh connection to all machines otherwise fail
+	&check_ssh();
+### once there are ssh connections copy files and installation script to remote####  machines
+	&copy_remote();
+### once there are ssh connections start installation on remote machines
+	&install_all();
+### once there are ssh connections check_installation
+### if instllation is not complete  run install command
+	&check_remote_install();
+}
+exit(0);
+sub start_all{
+
+	if ($install_dir!~/^\/[\w\-]+\/[\w\-]+\//){
+		print "Illegal installation directory value-->$install_dir\n";
+		return;
+	}
+	foreach $machine(@MACHINES){
+		$dest=$REMOTE_USER.'@'.$IP{$machine};
+		if ($my_ip eq $IP{$machine}){
+			
+			print "executing /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -start\n";
+			$test=`$is_root /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -start`;
+		}else{
+			print "executing $SSH$IP{$machine} -o StrictHostKeyChecking=no $is_root /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -start\n";
+			$test=`$SSH$IP{$machine} -o StrictHostKeyChecking=no $is_root /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -start`;
+		}
+		if ($test!~/STATUS OK$/){
+			die "error in starting processes in $machine\n See what is wrong, -start_all again\n error is $test";
+		}
+	}
+}
+sub install_all(){
+
+	if ($install_dir!~/^\/[\w\-]+\/[\w\-]+\//){
+		print "Illegal installation directory value-->$install_dir\n";
+		return;
+	}
+
+	foreach $machine(@MACHINES){
+		$dest=$REMOTE_USER.'@'.$IP{$machine};
+		if ($my_ip eq $IP{$machine}){
+			
+			print "executing $is_root /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -install\n";
+			$test=`$is_root /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -install`;
+		}else{
+			print "executing $SSH$IP{$machine} -o StrictHostKeyChecking=no $is_root /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -install\n";
+			$test=`$SSH$IP{$machine} -o StrictHostKeyChecking=no $is_root /home/$unix_user/iscaledb -h $machine -ip $IP{$machine} -u $unix_user -install`;
+		}
+		if ($test!~/STATUS OK$/){
+			print "error in installation in $machine\n See what is wrong, run iscaledb -cleanall to remove all installation and run iscaledb -install_all again\n error is $test";
+		}
+	}
+}
+
+
+sub cleanall(){
+
+	if ($install_dir!~/^\/[\w\-]+\/[\w\-]+\//){
+		print "Illegal installation directory value-->$install_dir\n";
+		return;
+	}
+	####first killall	
+	&killall();
+	foreach $machine(keys %IP){
+	$dest=$REMOTE_USER.'@'.$IP{$machine};
+		next if ($my_ip eq $IP{$machine});
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root rm -r -f  $install_dir`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root rm -r -f  $/tmp/scaledb*`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root service iptables start`;
+	}
+}
+
+
+### killing allscaledb  processes in all machines
+sub killall(){
+
+### Turn off mysql machines first
+	$dest=$REMOTE_USER.'@'.$IP{$machine};
+print "stating to kill all processes dest=$dest\n";
+	foreach $machine(keys %IP){
+		next if ($machine!~/MySQLN/);
+#		`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $install_dir/mysql/bin/mysqladmin -uroot shutdown`;
+		`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root  killall -9 mysqld`;
+	}
+### Shutdown SLMs
+	foreach $machine(keys %IP){
+		next if ($machine!~/SLM/);
+		`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root /sbin/fuser -k -n tcp $SLM_port`;
+		`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root killall -9 scaledb_slm`;
+	}
+##### Turn off both CAS
+### first gently
+foreach $machine(keys %IP){
+	next if ($machine!~/PCAS/);
+	`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root $install_dir/scaledb/lib/scaledb_admin shutdown cas $IP{$machine} 13306`;
+# `$SSH$IP{'PCASM'} -o StrictHostKeyChecking=no  $is_root $install_dir/scaledb/lib/scaledb_admin shutdown cas $IP{'PCASM'} 13306`;
+
+### than aggressivly 
+#`$SSH$IP{'PCAS'} -o StrictHostKeyChecking=no  $is_root killall -9 scaledb_cas`;
+#`$SSH$IP{'PCASM'} -o StrictHostKeyChecking=no  $is_root killall -9 scaledb_cas`;
+	`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no  $is_root killall -9 scaledb_cas`;
+}
+	
+
+### if process doesn't need to clean data due to a clean shutdown
+ return  if ($CLEANDATA);
+
+# clean all data on primary and mirror cas
+foreach $machine(keys %IP){
+	next if ($machine!~/PCAS/);
+	`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root find $install_dir/scaledb_data -type f -delete`;
+#`$SSH$IP{'PCAS'} -o StrictHostKeyChecking=no $is_root find $install_dir/scaledb_data -type f -delete`;
+#`$SSH$IP{'PCASM'} -o StrictHostKeyChecking=no $is_root find $install_dir/scaledb_data -type f -delete`;
+
+# clean all logs on both primary and mirror cas
+	`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root find $install_dir/scaledb_logs -type f -delete`;
+#`$SSH$IP{'PCAS'} -o StrictHostKeyChecking=no $is_root find $install_dir/scaledb_logs -type f -delete`;
+#`$SSH$IP{'PCASM'} -o StrictHostKeyChecking=no $is_root find $install_dir/scaledb_logs -type f -delete`;
+
+# remove all database directories from MySQL’s datadir
+	`$SSH$IP{'$machine'} -o StrictHostKeyChecking=no $is_root find $install_dir/mysql_data/ -maxdepth 1 -type d |grep -v "^\.$" | grep -v "^\.\/test$" | xargs rm -rf`;
+#`$SSH$IP{'PCAS'} -o StrictHostKeyChecking=no $is_root find $install_dir/mysql_data/ -maxdepth 1 -type d |grep -v "^\.$" | grep -v "^\.\/test$" | xargs rm -rf`;
+#`$SSH$IP{'PCASM'} -o StrictHostKeyChecking=no $is_root find $install_dir/mysql_data/ -maxdepth 1 -type d |grep -v "^\.$" | grep -v "^\.\/test$" | xargs rm -rf`;
+}
+### erase the unix_user
+	foreach $machine(keys %IP){
+		`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no  $is_root userdel -r $unix_user`;
+		`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no  $is_root rm -r -f /tmp/scaledb*`;
+		if ($HPCLOUD){
+		`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no  $is_root rm -r -f /mnt/mycluster`;
+		}
+	}
+	
+}
+sub check_local_user(){
+my $test;
+return if (! $unix_user);
+$test=`id $unix_user`;
+if ($test!~/^uid/){
+	print "creating local_user $unix_user";
+	if ($UBUNTU){
+		$test=`$is_root useradd -s /bin/bash -m $unix_user`;
+	}
+	else{
+		$test=`$is_root useradd $unix_user`;
+	}
+	if ($UBUNTU){
+		$test=`$is_root passwd -d $unix_user`;  # open account with no password
+	}
+	else{
+		$test=`$is_root passwd -f -u $unix_user`;  # open account with no password
+	}
+	`$is_root cp /home/$REMOTE_USER/iscaledb /home/$unix_user`;
+	`$is_root cp /home/$REMOTE_USER/iscale.manifest /home/$unix_user`;
+	`$is_root cp /home/$REMOTE_USER/idb /home/$unix_user`;
+	`$is_root cp /home/$REMOTE_USER/$SSHKEY /home/$unix_user`;
+	`$is_root chown -R $unix_user:$unix_user /home/$unix_user`;
+	
+	}
+}
+
+sub copy_remote_single(){
+my ($machine)=@_;	
+	$dest=$REMOTE_USER.'@'.$IP{$machine};
+		die "You defined this source machine as destination\n" if ($my_ip eq $IP{$machine});
+	
+print "copying installation files and scripts to $machine \n"; 
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root mkdir $install_dir`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root mkdir $rep_dir`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chmod 777 $rep_dir`;
+			`$SCP /home/$unix_user/iscale.manifest $dest:/home/$REMOTE_USER/iscale.manifest`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/iscale.manifest /home/$unix_user`;
+print "copying $SCP -o StrictHostKeyChecking=no /home/$unix_user/iscaledb $dest:/home/$REMOTE_USER/iscaledb\n";
+			`$SCP /home/$unix_user/iscaledb $dest:/home/$REMOTE_USER/iscaledb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/iscaledb /home/$unix_user`;
+			`$SCP /home/$unix_user/$SSHKEY $dest:/home/$REMOTE_USER/$SSHKEY`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/$SSHKEY /home/$unix_user`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user /tmp/scaledb-repository`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user /home/$unix_user/iscaledb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown  $unix_user /home/$unix_user/iscale.manifest`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user $install_dir`;
+			`$SCP /home/$unix_user/idb $dest:/home/$REMOTE_USER/idb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/idb /home/$unix_user`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user /home/$unix_user/idb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chmod 750 /home/$unix_user/idb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chmod 750 /home/$unix_user/iscaledb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user:$unix_user /home/$unix_user`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no  $is_root service iptables stop`;
+print "coping installation files $SCP $rep_dir/mysql.tar.gz $dest:/$rep_dir\n";
+			`$SCP $rep_dir/mysql.tar.gz $dest:/$rep_dir`;
+			`$SCP $rep_dir/maria.tar.gz $dest:/$rep_dir`;
+			`$SCP $rep_dir/scaledb.tar.gz $dest:/$rep_dir`;
+}
+
+sub copy_remote(){
+	
+	foreach $machine(keys %IP){
+	$dest=$REMOTE_USER.'@'.$IP{$machine};
+		next if ($my_ip eq $IP{$machine});
+# print "copying files to $machine $SCP -o StrictHostKeyChecking=no $rep_dir/mysql.tar.gz $dest:$rep_dir\n";
+print "creating user $unix_user on $machine machine \n"; 
+
+	if ($UBUNTU){
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root useradd -s /bin/bash -m $unix_user`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root passwd -d $unix_user`;
+		print "$SSH$IP{$machine} -o StrictHostKeyChecking=no $is_root useradd -s /bin/bash -m $unix_user remote=$REMOTE_USER\n";
+		if($REMOTE_USER eq 'root'){		
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root  ln -s /$REMOTE_USER /home/$REMOTE_USER`;
+		}
+	}
+	else{
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root useradd $unix_user`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root passwd -f -u $unix_user`;
+
+	}
+print "copying installation files and scripts to $machine \n"; 
+print "making directory		$SSH$IP{\"$machine\"} -o StrictHostKeyChecking=no $is_root mkdir $install_dir\n";
+if ($HPCLOUD){
+	
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root mkdir /mnt/mycluster`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown $unix_user  /mnt/mycluster`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root ln -s /mnt/mycluster $install_dir`;
+}
+else{
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root mkdir $install_dir`;
+}
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root mkdir $install_dir`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root mkdir $rep_dir`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chmod 777 $rep_dir`;
+			`$SCP /home/$unix_user/iscale.manifest $dest:/home/$REMOTE_USER/iscale.manifest`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/iscale.manifest /home/$unix_user`;
+#			`$SCP -o StrictHostKeyChecking=no /home/$unix_user/iscale.manifest $dest:/home/$unix_user/iscale.manifest`;
+			#`$SCP -o StrictHostKeyChecking=no /home/$unix_user/iscaledb $dest:/home/$unix_user/iscaledb`;
+print "copying $SCP /home/$unix_user/iscaledb $dest:/home/$REMOTE_USER/iscaledb\n";
+			`$SCP /home/$unix_user/iscaledb $dest:/home/$REMOTE_USER/iscaledb`;
+print "$SSH$IP{\"$machine\"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/iscaledb /home/$unix_user\n";
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/iscaledb /home/$unix_user`;
+print "$SCP /home/$unix_user/$SSHKEY $dest:/home/$REMOTE_USER/$SSHKEY\n";
+			`$SCP /home/$unix_user/$SSHKEY $dest:/home/$REMOTE_USER/$SSHKEY`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/$SSHKEY /home/$unix_user`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user /tmp/scaledb-repository`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user /home/$unix_user/iscaledb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown  $unix_user /home/$unix_user/iscale.manifest`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user $install_dir`;
+			`$SCP /home/$unix_user/idb $dest:/home/$REMOTE_USER`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root cp /home/$REMOTE_USER/idb /home/$unix_user`;
+#			`$SCP -o StrictHostKeyChecking=no /home/$unix_user/idb $dest:/home/$unix_user/idb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user /home/$unix_user/idb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chmod 750 /home/$unix_user/idb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chmod 750 /home/$unix_user/iscaledb`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root chown -R $unix_user:$unix_user /home/$unix_user`;
+			`$SSH$IP{"$machine"} -o StrictHostKeyChecking=no $is_root service iptables stop`;
+print "copy_remote $SCP $rep_dir/mysql.tar.gz $dest:/$rep_dir\n";
+#			`$SCP $rep_dir/mysql.tar.gz $dest:/$rep_dir`;
+			`$SCP $rep_dir/mariadb.tar.gz $dest:/$rep_dir`;
+				`$SCP $rep_dir/scaledb.tar.gz $dest:/$rep_dir`;
+		
+
+		}
+	}
+
+	sub check_remote_install(){
+
+	}
+	sub check_ssh{
+	my $machine;
+		foreach $machine(keys %IP){
+			next if ($IP{$machine} eq '');
+			print "ip = $IP{$machine}\n";
+			`unlink  $rep_dir/$machine 2>&1`;
+			print "testing connection to machine $machine\n";
+			my $pid= fork();
+			if ($pid){
+				sleep 8;
+			#	print "killing process $pid\n";  #DEBUG
+				`$is_root kill -15 $pid`;
+				 $cpid=`ps  w -C ssh| egrep $machine | egrep -v egrep`;
+				print "cpid=$cpid\n";
+				if($cpid=~s/^\s+(\d+)\s+.+$/$1/){
+					print "killing process $cpid\n"; #DEBUG;
+					`$is_root kill -15 $cpid`;
+				}
+				
+			}
+			else{
+				print "ssh=$SSH$IP{$machine} echo $machine\n"; # DEBUG
+				`$SSH$IP{$machine} -o StrictHostKeyChecking=no echo $machine`;
+			  `echo $test > $rep_dir/$machine`;
+			  exit(0);
+			}
+		}
+		foreach $machine(keys %IP){
+			if (! -e "$rep_dir/$machine"){
+				die "Cannot Access freely by SSH to $machine machine\n$Abort\n";
+			}
+		}
+	}
+			 
+
+
+	sub create_repos{
+
+
+	### check if repository was already created
+	if (-d $rep_dir && -e "$rep_dir/mysql.tar.gz" && -e "$rep_dir/mariadb.tar.gz" && -e "$rep_dir/scaledb.tar.gz"){
+	print "Repository and files already exists\nSkipping to next step\n";
+	return;
+	}
+### Check to see if there is a space in /tmp 
+
+my %sizes=('P',1000000000,'G',1000000,'M',1000,'K',1);
+ my $size=`df -h /tmp | tail -n1`;
+	$size=(split('\s+',$size))[3];
+	my $unit = substr($size,-1,1);
+	$size=$size*$sizes{$unit};
+	if ($size<$MinRepSize){
+		die "not enough space (only ${size}K available) to create a repositiry for the installation files\n$Abort";
+	}
+unless(-d $rep_dir){
+	`mkdir $rep_dir`;
+	`chmod 777 $rep_dir`;
+}
+	if (! -d $rep_dir){
+		die "couldn't create a repository $rep_dir directory \n$Abort";
+	}
+### download mysql
+ #   &download_file($mysql_url,'mysql');
+    &download_file($mariadb_url,'mariadb');
+    &download_file($scaledb_url,'scaledb');
+    
+}
+
+sub download_file{
+	my ($fileurl,$filename)=@_;
+if (! -e "$rep_dir/$filename.tar.gz"){
+    `wget --directory-prefix=$rep_dir $fileurl `;
+	print "mv $rep_dir/*$filename* $rep_dir/$filename.tar.gz\n";
+    `mv $rep_dir/*$filename* $rep_dir/$filename.tar.gz`;
+ #   $test=`gzip -t $rep_dir/$filename.tar.gz`;
+	$test='';
+	if ($test ne ''){
+		die "corrupt $rep_dir/$filename file\nCheck if you have enough disk space and re-run the script\n$Abort";
+	}
+}
+
+}
+sub get_my_ip{
+my $ifs=`$ifconfig -a | egrep 'inet ' | egrep -v 127.0.0.1`;
+my @ifs=split(/\n/,$ifs);
+	foreach $line(@ifs){
+		if ($line=~/inet\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+/){
+			push(@mips,$1);
+		}
+	}
+	if ($#mips>=1){
+		die "more than one ip on thios machine , don't know how to bind to more than one ip\n";
+	}
+	return $mips[0];
+}	
+
+ sub check_state{
+
+
+}
+sub check_manifest{
+print "cur_dir=$cur_dir manifest=$manifest\n";
+my $ip;
+	if (-e $manifest){
+		print "Detected manifest File\n";
+	}
+	else{
+		create_manifest();
+		die "Update details in $manifest file and rerun the script\n";
+	}
+	print "Checking manifest file content\n";
+	
+	open(MF,"<$manifest") || die "Couldn't open $manifest file for reading !$\n";
+	while(<MF>){
+		next if (/^\s*#/);	
+		if (/^\s*mysql_url\s+([^\s]+)\s*$/){
+			$mysql_url=$1;
+			next;
+		}
+		if (/^\s*install_dir\s+([^\s]+)\s*$/){
+			$install_dir='/home/'.$unix_user.'/'.$1;
+			next;
+		}
+		if (/^\s*mariadb_url\s+([^\s]+)\s*$/){
+			$mariadb_url=$1;
+			next;
+		}
+		if (/^\s*scaledb_url\s+([^\s]+)\s*$/){
+			$scaledb_url=$1;
+			next;
+		}
+		if (/^\s*unix_user\s+([^\s]+)\s*$/){
+			$unix_user=$1;
+			next;
+		}
+		if (/^\s*SSHKEY\s+([^\s]+)\s*$/){
+			$SSHKEY=$1;
+			$SSH="ssh -i /home/$REMOTE_USER/$SSHKEY -t -t $REMOTE_USER@";
+			print "ssh=$SSH\n";
+			$SCP="$is_root scp -i /home/$REMOTE_USER/$SSHKEY  -o StrictHostKeyChecking=no ";
+		#	$SCP=~s/ssh/scp/;
+			# $SCP=~s/$REMOTE_USER\@//;
+			next;
+		}
+		if (/^\s*firewall\s+([^\s]+)\s*$/){
+			$firewall=$1;
+			if ($firewall=~/off/i){
+				$FIREWALL=0;
+			}
+			next;
+		}
+		foreach $machine(@MACHINES){
+			if (/^\s*$machine\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*/){
+				$IP{$machine}=$1;	
+				print "machine $machine IP=$IP{$machine}\n";
+				next;
+			}
+		}
+		if (/^\s*(MySQLN)(\d+)\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/){
+			if ($2 >2){
+				$mach=$1.$2;
+                        	push(@MACHINES,$mach);
+				$IP{$mach}=$3;
+			}
+                }
+	
+	}
+	close(MF);
+
+	foreach $machine(@MACHINES){
+		if(!  $IP{$machine}){
+			die "cannot continue , don't know the IP of machine $machine $IP{$machine}\n";
+		}
+	}
+}
+
+sub test_req{
+
+	&test_amazon();
+	&test_root();
+	&test_linux();
+	&test_libaio();
+}
+sub test_amazon{
+	$test=`uname -a`;
+	if ($test=~/\.amzn\d/){
+		$AMZ=1;
+		$REMOTE_USER='ec2-user';
+	}
+print "This is an amazon image \n" if ($AMZ);
+}
+
+sub test_root{
+	if (`whoami` =~ /^root$/){
+		$is_root='';
+		$test=`ln -s /root /home/root`;
+		$is_root='sudo' if ($CLOUDIFY_HP);
+	}
+	else{
+		$is_root='sudo ';
+	}
+print "isroot=$is_root\n";
+}
+
+sub test_libaio{
+
+  if ($UBUNTU){
+	my $test=`$is_root dpkg-query -l libaio1 2>&1| egrep -v 'no packages'`;
+	my $test=`$is_root apt-get install libaio1`;
+  }else{
+	my $test=`yum list installed | egrep libaio`;
+  }
+  $IAIO=0;
+  if ($test!~/libaio/){
+  	if (!$AMZ){
+	#die "Couldn't locate libaio.so library\nPlease install this library using yum install libaio.x86_64 on all machines (libaio1 library on Debian)and run the installation Again \nor mark yes on the 'install libaio' on the manifest file $Abort"; 
+		$IAIO=0;
+   	}
+   	else{
+		$IAIO=1;
+   	}
+  }
+  if (! $IAIO){
+	if($UBUNTU){
+		$test=`apt-get install libaio1`;
+		$test=`dpkg-query -l libaio1 2>&1 | egrep libaio`;
+		die 'Failed installing libaio1' if (! $test);
+	}
+	else{
+		$test=`yum install -y libaio`;
+		$test=`yum install -y libaio | egrep 'Nothing to do'`;
+		die 'Failed installing libaio' if (! $test) ;
+	}
+  }
+
+			
+}
+
+sub test_linux{
+	$test=`uname -a`;
+# $test="LiNux Hafganadev 2.6.9-2.fc17.x86_64 #1 SMP"; DEBUG
+#Linux ubuntu 3.8.0-19-generic #29-Ubuntu SMP Wed Apr 17 18:16:28 UTC 2013 x86_64 x86_64 x86_64 GNU/Linux
+	if ($test!~/^(\w+)\s+([\w\.\-\+]+)\s+(\d)\.(\d+)\.[\w\.\-\+\#\s\:]+x86_(64)\s+/){
+		die "unrecognize uname -a format\nCan't determine if   system installation requirements are met\n";
+	}
+	$linux=$1;
+	$distrib=$2;
+	$kernel1=$3+0;
+	$kernel2=$4+0;
+	$b64=$5;
+	if ($linux !~ /linux/i){
+		die "The system must be a linux system!!!\n$Abort";
+	}
+	if ($kernel1<=1 ||($kernel1<=2 && $kernel2<6)){
+		die "Kernel version is smaller than 2.6.x!!!\nUpdate Kernel version to be larger than 2.6.x and try to reinstall\n$Abort";
+	}	
+	if ($b64 ne "64"){
+		die "Machine is not a 64 bit machine!!!\n$Abort";
+	}	
+	$UBUNTU=1 if ($distrib eq 'ubuntu' || $test=~/ubuntu/i);
+print "linux=$linux distribution=$distrib kernel1=$kernel1 kernel2=$kernel2 b64=$b64\n";# DEBUG	
+	if ($UBUNTU){
+		$REMOTE_USER='ubuntu';
+	}
+}
+
+sub test_cmd{
+
+my ($cmd)=@_;
+
+	$test=`which $cmd 2>&1`;
+# print "test=$test";
+	if ($test=~/no\s+$cmd\s+/){
+		die "Command '$cmd' not supported\nplease install the '$cmd' command and re-run the installation script\n";
+	}
+
+}
+
+sub create_manifest{
+
+my $manifest_base="
+###  The unix account that will run and include the installation files
+###  it should exist on all system and all systems should have free ssh access
+###  to this account
+unix_user  scaledb
+### installation directory of the cluster software
+install_dir mycluster
+### SSH access parameters
+SSHKEY nati-kp-west.pem
+###  Download Urls
+mysql_url http://downloads.mysql.com/archives/mysql-5.1/mysql-5.1.66-linux-x86_64-glibc23.tar.gz
+
+#mariadb_url  http://pub.scaledb.com/dump/mariadb-5.5.30-linux-x86_64.tar.gz
+mariadb_url   https://region-a.geo-1.objects.hpcloudsvc.com/v1/28974857097923/obj_pub1/mariadb-5.5.30-linux-x86_64.tar.gz
+
+# scaledb_url      http://www.scaledb.com/scaledb-latest-mysql-5.5.30.tar.gz
+#scaledb_url	   http://www.scaledb.com/scaledb-latest-mariadb-5.5.30.tar.gz
+scaledb_url	   https://region-a.geo-1.objects.hpcloudsvc.com/v1/28974857097923/obj_pub1/scaledb-latest-mariadb-5.5.30.tar.gz
+
+### what should be the state of the firewall (iptables) 
+#firewall off	
+
+### Machines IP's
+### If you add mysql nodes keep this numbering
+PCAS
+PCAS1M
+SLM1
+SLM2
+MySQLN1
+MySQLN2";
+
+		open(MF,">$manifest") || die "Couldn't create $manifest manifst file !$\n$Abort";
+		print MF $manifest_base;
+		close(MF);
+	}
+
+
+sub get_flag_info{
+	my $i;
+		for($i=0;$i<=$#ARGV;$i++){	
+			if ($ARGV[$i]=~/-h$/){
+				$i++;
+				$hostname=$ARGV[$i];
+				next;
+			}
+			if ($ARGV[$i]=~/-ip$/){
+				$i++;
+				$ip=$ARGV[$i];
+				next;
+			}
+			if ($ARGV[$i]=~/-clean$/){
+				$CLEAN=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-check$/){
+				$CHECK=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-install$/){
+				$INSTALL=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-clean_all$/){
+				$CLEANALL=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-kill_all$/){
+				$KILLALL=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-cleandata$/){
+				$CLEANDATA=0;
+				next;
+			}
+			if ($ARGV[$i]=~/-install_all$/){
+				$INSTALL_ALL=1;
+				if ($HPCLOUD){
+					print "trying to get sshkey\n";
+					`sudo perl /home/ubuntu/iscaledb -getkey`;
+				}
+				next;
+			}
+			if ($ARGV[$i]=~/-install$/){
+				$INSTALL=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-start$/){
+				$START=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-start_all$/){
+				$STARTALL=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-stop$/){
+				$STOP=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-add$/){
+				$ADD=1;
+				next;
+			}
+			if ($ARGV[$i]=~/-mf$/){
+				$i++;
+				$manifest=$ARGV[$i].'/'.'iscale.manifest';
+				next;
+			}
+                        if ($ARGV[$i]=~/-u$/){
+                                $i++;
+                                $unix_user=$ARGV[$i];
+                                chdir "/home/$unix_user";
+                                $cur_dir=getcwd;
+                                $manifest=$cur_dir.'/'.'iscale.manifest';
+                                next;
+                        }
+			if ($ARGV[$i]=~/-v/){
+				die "$VERSION\n";
+			}
+                        if ($ARGV[$i]=~/-getkey/){
+                                get_sshkey();
+                                exit(0);
+                        }
+
+		}
+}
+
+
+sub check_host(){
+		print "hosname=$hostname ip=$ip  install=$INSTALL add=$ADD check=$CHECK\n";
+		return if (! $hostname);
+		return if (! $INSTALL);
+		foreach $machine(@MACHINES){
+			if ($hostname=~/MySQLN\d+/){
+				&copy_remote_single($hostname) if ($ADD);
+				goto install_MySQL;
+			}
+			if ($hostname=~/PCAS\d+M/){
+				&copy_remote_single($hostname) if ($ADD);
+				goto install_PCASM;
+			}
+			if ($hostname=~/PCAS\d+/){
+				&copy_remote_single($hostname) if ($ADD);
+				goto install_PCAS;
+			}
+			if ($machine eq $hostname){
+				&copy_remote_single($hostname) if ($ADD);
+				goto "install_$machine";
+			}
+		}
+			die "invalid hostname, quitting\n";
+
+}
+
+
+
+install_PCAS:
+my $dnum=$1 if ($hostname=~/PCAS(\d+)/);
+	`tar xvf $rep_dir/scaledb.tar.gz -C $install_dir`;
+# rename "$install_dir/scaledb-*","$install_dir/scaledb";
+`mv $install_dir/scaledb-* $install_dir/scaledb`;
+`$is_root mkdir $install_dir/scaledb_data`;
+`$is_root mkdir $install_dir/scaledb_data/test`;
+`$is_root chown $unix_user $install_dir/scaledb_data/test`;
+print "$is_root tar xzf $rep_dir/ycsb.cas$dnum.tar.gz -C $install_dir/scaledb_data/test\n";
+`$is_root tar xzf $rep_dir/ycsb.cas$dnum.tar.gz -C $install_dir/scaledb_data/test`;
+#`$is_root chown -R $unix_user $install_dir/scaledb_data/test`;
+if ($HPCLOUD){
+	print "$is_root chown -R $unix_user:$unix_user /mnt/mycluster\n";
+	`$is_root chown -R $unix_user:$unix_user /mnt/mycluster`;
+}
+else{
+	print "$is_root chown -R $unix_user:$unix_user $install_dir\n";
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+}
+#	&update_cas("-s $dnum -v");
+	&update_cas("-v");
+	die "installed PCAS$dnum\n";
+install_PCASM:
+my $dnum=$1 if ($hostname=~/PCAS(\d+)M/);
+	`tar xvf $rep_dir/scaledb.tar.gz -C $install_dir`;
+# rename "$install_dir/scaledb-*","$install_dir/scaledb";
+`mv $install_dir/scaledb-* $install_dir/scaledb`;
+`$is_root mkdir $install_dir/scaledb_data`;
+`$is_root mkdir $install_dir/scaledb_data/test`;
+`$is_root chown $unix_user $install_dir/scaledb_data/test`;
+#`$is_root chown -R $unix_user $install_dir/scaledb_data/test`;
+print "pcasm-root chown -R $unix_user:$unix_user $install_dir\n";
+`$is_root chown -R $unix_user:$unix_user $install_dir`;
+#	&update_cas("-s $dnum -m");
+	&update_cas("-m");
+	die "installed PCAS${dnum}M\n";
+install_SLM1:
+	`tar xvf $rep_dir/scaledb.tar.gz -C $install_dir`;
+	print "mv $install_dir/scaledb-* $install_dir/scaledb";
+# rename "$install_dir/scaledb-*","$install_dir/scaledb";
+`mv $install_dir/scaledb-* $install_dir/scaledb`;
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+	&update_slm("SLM1");
+	die "installed SLM1\n";
+install_SLM2:
+	`tar xvf $rep_dir/scaledb.tar.gz -C $install_dir`;
+# rename "$install_dir/scaledb-*","$install_dir/scaledb";
+`mv $install_dir/scaledb-* $install_dir/scaledb`;
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+	&update_slm("SLM2");
+	die "installed SLM2\n";
+install_MySQL:
+	if ($HPCLOUD){
+		$tinstall_dir=$install_dir;
+		$install_dir='/mnt/mycluster';
+	}
+	print "Untarring tar xvf $rep_dir/scaledb.tar.gz -C $install_dir";
+	`tar xvf $rep_dir/scaledb.tar.gz -C $install_dir`;
+# rename "$install_dir/scaledb-*","$install_dir/scaledb";
+`mv $install_dir/scaledb-* $install_dir/scaledb`;
+#	`tar xvf $rep_dir/mysql.tar.gz -C $install_dir`;
+#	`mv $install_dir/mysql* $install_dir/mysql`;
+	`tar xvf $rep_dir/mariadb.tar.gz -C $install_dir`;
+	`mv $install_dir/mariadb* $install_dir/mysql`;
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+	&update_mysql($hostname);
+	if ($HPCLOUD){
+		$install_dir=$tinstall_dir;
+	}
+	die "installed MySQL\n";
+ 
+sub update_mysql(){
+my ($sql)=@_;
+my $test='';
+my $sql_file="
+#
+# $install_dir/my.cnf
+#
+[mysqld]
+user=$unix_user
+plugin_dir=$install_dir/scaledb/x86_64
+transaction-isolation = READ-COMMITTED
+query_cache_size=0
+datadir=$install_dir/mysql_data
+basedir=$install_dir/mysql
+";
+$plugin_file="
+scaledb_node_name=$sql
+scaledb_cas_config_ips = $IP{'PCAS1'},$IP{'PCAS1M'}
+scaledb_cas_config_ports = $CAS_port,$CAS_port";
+
+
+	`service iptables stop` if (! $FIREWALL);
+	`rm /etc/my.cnf`;
+	open(MSQL,">$install_dir/my.cnf") || die "Couldn't open $install_dir/my.cnf file for update !$\n$Abort";
+	print MSQL $sql_file;
+	close(MSQL);
+print "$install_dir/mysql/scripts/mysql_install_db --datadir=$install_dir/mysql_data --basedir=$install_dir/mysql";
+	`$install_dir/mysql/scripts/mysql_install_db --datadir=$install_dir/mysql_data --basedir=$install_dir/mysql`;
+	`chown -R $unix_user:$unix_user $install_dir`;
+	open(PLUG,">$install_dir/scaledb_plugin.cnf") || die "Couldn't open $install_dir/scaledb_plugin.cnf file for update !$\n$Abort";
+	print PLUG $plugin_file;
+	close(PLUG);
+	`chown $unix_user:$unix_user $install_dir/scaledb_plugin.cnf`;
+	`ln -s $install_dir/scaledb_plugin.cnf $install_dir/mysql_data/scaledb.cnf`;
+	$bash=`su - $unix_user -c "cat /home/$unix_user/.bashrc | egrep -v LD_LIBRARY_PATH"`;
+	$bash.="export LD_LIBRARY_PATH=$install_dir/scaledb/x86_64\n";
+	open(BASH,">/home/$unix_user/.bashrc") || die "Couldn't open /home/$unix_user/.bashrc file for update !$\n$Abort";
+	print BASH $bash;
+	close(BASH);
+	`chown $unix_user:$unix_user /home/$unix_user`;
+	chdir("$install_dir/mysql");
+			print "Now running the SQL SERVER!! \n";
+$pid=fork();
+if ($pid==0){
+	`su - $unix_user -c "/home/$unix_user/idb &"`;
+	die "running database\n";
+	}	
+	sleep 15;
+	`$is_root killall idb`;
+	`$is_root kill -15 $pid`;
+	my $test=`ps wwaux | egrep mysqld | egrep -v egrep|wc -l`;
+	if ($test=~/2/){
+		print "STATUS OK test2=$test\n";
+	}
+	else{
+		print "STATUS FAIL test2=$test\n";
+	}
+}
+
+sub update_slm(){
+my ($slm)=@_;
+
+my $slm_file="
+# $slm
+slm_ip = $IP{$slm}
+slm_port=$SLM_port
+
+scaledb_cas_config_ips = $IP{'PCAS1'},$IP{'PCAS1M'}
+scaledb_cas_config_ports = $CAS_port,$CAS_port
+";
+
+
+	`service iptables stop` if (! $FIREWALL);
+#	`su - $unix_user`;
+	open(SLM,">$install_dir/slm.cnf") || die "Couldn't open $install_dir/slm.cnf file for update !$\n$Abort";
+	print SLM $slm_file;
+	close(SLM);
+if ($HPCLOUD){
+	print "$is_root chown -R $unix_user:$unix_user /mnt/mycluster\n";
+	`$is_root chown -R $unix_user:$unix_user /mnt/mycluster`;
+}
+else{
+	print "$is_root chown -R $unix_user:$unix_user $install_dir\n";
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+}
+`nohup /bin/bash $install_dir/scaledb/scripts/slm_run -f $install_dir/slm.cnf -v`;
+	my $test=`ps wwaux | egrep slm.cnf | egrep -v egrep | wc -l`;
+		if ($test=~/1/){
+			print "STATUS OK\n";
+		}
+		else{
+			print "STATUS FAIL\n";
+		}
+}
+
+sub update_cas(){
+my ($mirror)=@_;
+
+my $cas_file="
+#ps
+#For EC2 Installation these directories should be on EBS volumes
+#
+scaledb_data_directory = $install_dir/scaledb_data
+scaledb_db_directory test = $install_dir/scaledb_data/test
+scaledb_log_directory= $install_dir/scaledb_logs
+
+#
+# more memory better, but over-allocation causes system to hang
+
+#
+
+scaledb_buffer_size_index=$SINDEX[$MSIZE]M
+scaledb_buffer_size_data=$SDATA[$MSIZE]M
+scaledb_buffer_size_blob=$SBLOB[$MSIZE]M
+scaledb_cas_pre_load_cache=true
+scaledb_cas_pre_load_cache_ovf=true
+scaledb_var_char_precentage=100
+";
+if ($mirror =~ /m/){
+	$cas_file.="
+scaledb_cas_server_ips = $IP{'PCAS1'}
+scaledb_cas_server_ports = $CAS_port
+scaledb_cas_mirror_ips = $IP{'PCAS1M'}
+scaledb_cas_mirror_ports = $CAS_port
+";
+}else{
+print "NOT MIRROR !!!  - $cas_ips $cas_ports\n";
+	$cas_file.="
+scaledb_cas_server_ips = $IP{'PCAS1'}
+scaledb_cas_server_ports = $CAS_port
+scaledb_cas_mirror_ips = $IP{'PCAS1M'}
+scaledb_cas_mirror_ports = $CAS_port
+";	
+}
+
+
+#	$NEWFILE='';	
+#	open(CAS,"<$install_dir/cas.cnf") || die "Couldn't open $install_dir/cas.cnf file for update !$\n$Abort";
+#	while(<CAS>){
+#		if (/scaledb_data_directory/){
+#			$NEWFILE="scaledb_data_directory	= $install_dir/scaledb_data";	
+#			next;
+#		}
+#		if (/scaledb_db_directory test/){
+#			$NEWFILE="scaledb_db_directory test	= $install_dir/scaledb_data/test";	
+#			next;
+#		}
+#		if (/scaledb_log_directory/){
+#			$NEWFILE="scaledb_log_directory test	= $install_dir/scaledb_logs";	
+#			next;
+#		}
+#		if (/scaledb_cas_server_ips/){
+#			$NEWFILE="scaledb_cas_server_ips = $my_ip";	
+#			next;
+#		}
+#		if (/scaledb_cas_mirror_ips/){
+#			$NEWFILE="scaledb_mirrorr_ips = $IP{'PCAS'}";	
+#			next;
+#		}
+#		$NEWFILE.=$_;
+#	}
+#	close(CAS);
+print $cas_file;
+	`service iptables stop` if (! $FIREWALL);
+	open(CAS,">$install_dir/cas.cnf") || die "Couldn't open $install_dir/cas.cnf file for update !$\n$Abort";
+	print CAS $cas_file;
+	close(CAS);
+if ($HPCLOUD){
+	print "$is_root chown -R $unix_user:$unix_user /mnt/mycluster\n";
+	`$is_root chown -R $unix_user:$unix_user /mnt/mycluster`;
+}
+else{
+	print "$is_root chown -R $unix_user:$unix_user $install_dir\n";
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+}
+	print "su - $unix_user -c nohup bash $install_dir/scaledb/scripts/cas_run -f $install_dir/cas.cnf $mirror\n";
+	`su - $unix_user -c "nohup bash $install_dir/scaledb/scripts/cas_run -f $install_dir/cas.cnf $mirror"`;
+	my $test=`ps wwaux | egrep cas.cnf | egrep -v egrep| wc -l`;
+		if ($test=~/1/){
+			print "STATUS OK\n";
+		}
+		else{
+			print "STATUS FAIL\n";
+		}
+
+}
+sub start_service(){
+		print "hostname=$hostname ip=$ip start=$start install=$INSTALL check=$CHECK\n";
+		return if (! $hostname);
+		return if (! $START);
+		foreach $machine(@MACHINES){
+			if ($hostname=~/MySQLN\d+/){
+				start_mysql($machine);
+				return;
+			}
+			if ($hostname=~/SLM\d+/){
+				start_slm($machine);
+				return;
+			}
+			if ($hostname=~/PCAS(\d+)(M*)/){
+				my $snum=$1;
+				my $mirror=$2;
+				
+				if ($mirror eq 'M'){
+					&start_cas("-s $snum -v -m");
+					return;
+				}
+				else{
+					&start_cas("-s $snum -v");
+					return;
+				}
+			}
+		}
+			die "invalid hostname, quitting\n";
+
+}
+sub start_mysql(){
+my ($sql)=@_;
+my $test='';
+
+$plugin_file="
+scaledb_node_name=$sql
+scaledb_cas_config_ips = $IP{'PCAS1'},$IP{'PCAS1M'}
+scaledb_cas_config_ports = $CAS_port,$CAS_port";
+
+	`service iptables stop` if (! $FIREWALL);
+	`rm /etc/my.cnf`;
+	open(PLUG,">$install_dir/scaledb_plugin.cnf") || die "Couldn't open $install_dir/scaledb_plugin.cnf file for update !$\n$Abort";
+	print PLUG $plugin_file;
+	close(PLUG);
+#	`$install_dir/mysql/bin/mysqld_safe --defaults-file=$install_dir/my.cnf &`;
+			print "Now running the SQL SERVER!! \n";
+#		exec "su - $unix_user -c \"$install_dir/mysql/bin/mysqld --defaults-file=$install_dir/my.cnf &\"";
+	my $test=`ps wwaux | egrep mysqld_safe | egrep -v egrep| wc -l`;
+		if ($test=~/1/){
+			print "STATUS OK test=$test\n";
+		}
+		else{
+			print "STATUS FAIL test=$test\n";
+		}
+}
+sub start_slm(){
+my ($slm)=@_;
+
+my $slm_file="
+# $slm
+slm_ip = $IP{$slm}
+slm_port=$SLM_port
+
+scaledb_cas_config_ips = $IP{'PCAS'}, $IP{'PCAS1M'}
+scaledb_cas_config_ports = $CAS_port,$CAS_port
+";
+	`service iptables stop` if (! $FIREWALL);
+#	`su - $unix_user`;
+	open(SLM,">$install_dir/slm.cnf") || die "Couldn't open $install_dir/slm.cnf file for update !$\n$Abort";
+	print SLM $slm_file;
+	close(SLM);
+if ($HPCLOUD){
+	print "$is_root chown -R $unix_user:$unix_user /mnt/mycluster\n";
+	`$is_root chown -R $unix_user:$unix_user /mnt/mycluster`;
+}
+else{
+	print "$is_root chown -R $unix_user:$unix_user $install_dir\n";
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+}
+`nohup bash $install_dir/scaledb/scripts/slm_run -f $install_dir/slm.cnf -v`;
+	my $test=`ps wwaux | egrep slm | egrep -v egrep | wc -l`;
+		if ($test=~/1/){
+			print "STATUS OK\n";
+		}
+		else{
+			print "STATUS FAIL\n";
+		}
+}
+
+sub start_cas(){
+my ($mirror)=@_;
+
+my $cas_file="
+#ps
+#For EC2 Installation these directories should be on EBS volumes
+#
+scaledb_data_directory = $install_dir/scaledb_data
+scaledb_db_directory test = $install_dir/scaledb_data/test
+scaledb_log_directory= $install_dir/scaledb_logs
+
+#
+# more memory better, but over-allocation causes system to hang
+
+#
+scaledb_buffer_size_index=$SINDEX[$MSIZE]M
+scaledb_buffer_size_data=$SDATE[$MSIZE]M
+scaledb_buffer_size_blob=$SBLOB[$MSIZE]M
+";
+
+if ($mirror =~/m/){
+	$cas_file.="
+scaledb_cas_server_ips = $IP{'PCAS1'}
+scaledb_cas_server_ports = $CAS_port
+";
+}else{
+print "START NOT MIRROR !!!  - $cas_ips $cas_ports\n";
+	$cas_file.="
+scaledb_cas_server_ips = $cas_ips
+scaledb_cas_server_ports = $cas_ports
+";	
+}
+	`service iptables stop` if (! $FIREWALL);
+	open(CAS,">$install_dir/cas.cnf") || die "Couldn't open $install_dir/cas.cnf file for update !$\n$Abort";
+	print CAS $cas_file;
+	close(CAS);
+if ($HPCLOUD){
+	print "$is_root chown -R $unix_user:$unix_user /mnt/mycluster\n";
+	`$is_root chown -R $unix_user:$unix_user /mnt/mycluster`;
+}
+else{
+	print "$is_root chown -R $unix_user:$unix_user $install_dir\n";
+	`$is_root chown -R $unix_user:$unix_user $install_dir`;
+}
+	`su - $unix_user -c "nohup bash $install_dir/scaledb/scripts/cas_run -f $install_dir/cas.cnf $mirror"`;
+	my $test=`ps wwaux | egrep cas | egrep -v egrep| wc -l`;
+		if ($test=~/1/){
+			print "STATUS OK\n";
+		}
+		else{
+			print "STATUS FAIL\n";
+		}
+
+}
+
+sub create_idb{
+
+#my $idbfile="/home/$unix_user/idb";
+my $idbfile="/home/$REMOTE_USER/idb";
+my $idb="#!/usr/bin/perl
+\$ENV{'LD_LIBRARY_PATH'}='/home/$unix_user/mycluster/scaledb/x86_64';
+chdir \"$install_dir/mysql\";
+\$pid=fork();
+if (\$pid==0){
+
+`$install_dir/mysql/bin/mysqld_safe --defaults-file=$install_dir/my.cnf`;
+}
+else{
+        sleep 8;
+ `$install_dir/mysql/bin/mysql -uroot -e \\\"GRANT all ON test.* to root@\\'%\\'\\\"`;
+        `$install_dir/mysql/bin/mysql -uroot -e \\\"INSTALL PLUGIN scaledb SONAME 'ha_scaledb.so'\\\"`;
+
+}";
+		open(IDB,">$idbfile") || die "Couldn't create $dbfile db install file !$\n$Abort";
+		print IDB $idb;
+		close(IDB);
+
+}
+
+sub check_idb{
+$idbfile="/home/$unix_user/idb";
+my $ip;
+	if (-e $idbfile){
+		print "Detected idb File\n";  #DEBUG
+	}
+	else{
+		create_idb();
+		 print "Created idb file\n";  #DEBUG
+	}
+}
+sub get_sshkey(){
+my $keypath='/root/gigaspaces';
+my $file;
+   opendir my $dh,$keypath;
+    while ($file = readdir($dh)) {
+        $file="$keypath/$file";
+        next if ( ! -f $file);
+        my $header=`head -1 $file`;
+        if ($header=~/BEGIN RSA PRIVATE KEY/){
+                print " file =$file\n";
+                        last;
+        }
+    }
+print "cp $file /home/ubuntu\n";
+$exec=`cp $file /home/ubuntu/`;
+update_ssh($file);
+}
+
+sub update_ssh(){
+
+my ($file)=@_;
+
+
+print "update file=$file\n";
+$file=~s/^.+\/(.+)$/$1/;
+$ffile="/home/ubuntu/$file";
+print "upodating $ffile\n";
+`chown ubuntu.ubuntu $file`;
+`chmod 400 $file`;
+open(FH,"</home/ubuntu/iscale.manifest");
+my $content='';
+        while(<FH>){
+                if (/SSHKEY/)   {
+                        $content.="SSHKEY $file\n";
+                        next;
+                }
+                $content.=$_;
+        }
+close(FH);
+open(FH,">/home/ubuntu/iscale.manifest");
+print FH $content;
+close (FH);
+}
+
