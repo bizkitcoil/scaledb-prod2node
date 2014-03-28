@@ -8,7 +8,7 @@ def rem_dir=context.serviceDirectory
 def homedir=""
 def config = new ConfigSlurper().parse(new File("pcas-service.properties").toURL())
 if(config.UNIX_USER == "root")
-	homedir = "/root"
+	homedir = "/home/root"
 else
 	homedir = "/home/$config.UNIX_USER"
 

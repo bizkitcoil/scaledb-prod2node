@@ -1,5 +1,5 @@
 #! /bin/bash
-
+set -x
 #$1 context directory
 #$2 unix user name
 #$3 pem file
@@ -10,13 +10,12 @@
 sudo apt-get install libaio1
 
 if [$2 = "root"]; then
-	homedir = "/root"
+	homedir='/root'
 else
-	homedir ="/home/$2"
+	homedir="/home/$2"
 fi
-homedir=/home/$2
 
-sudo cp $1/iscaledb /home/$2/iscaledb
+sudo cp $1/iscaledb $homedir/iscaledb
 #echo "cp $1/${KeyFileName} /home/$2/${KeyFileName}"
  sudo cp $1/$3 $homedir/$3
  sudo chmod 400 $homedir/$3

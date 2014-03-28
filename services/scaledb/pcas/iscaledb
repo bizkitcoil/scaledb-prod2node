@@ -645,7 +645,12 @@ sub test_linux{
 	$UBUNTU=1 if ($distrib eq 'ubuntu' || $test=~/ubuntu/i);
 print "linux=$linux distribution=$distrib kernel1=$kernel1 kernel2=$kernel2 b64=$b64\n";# DEBUG	
 	if ($UBUNTU){
-		$REMOTE_USER='ubuntu';
+		if ($HPCLOUD){
+			$REMOTE_USER='root';
+		}
+		else{
+			$REMOTE_USER='ubuntu';
+		}
 	}
 }
 
@@ -741,7 +746,7 @@ sub get_flag_info{
 				$INSTALL_ALL=1;
 				if ($HPCLOUD){
 					print "trying to get sshkey\n";
-					`sudo perl /home/ubuntu/iscaledb -getkey`;
+					`sudo perl /home/root/iscaledb -getkey`;
 				}
 				next;
 			}
@@ -1255,7 +1260,9 @@ my $ip;
 	}
 }
 sub get_sshkey(){
-my $keypath='/root/gigaspaces';
+$REMOTE_USER='root' if ($HPCLOUD);
+#my $keypath='/root/gigaspaces';
+my $keypath='/home/root/gs-files/cloudify-overrides';
 my $file;
    opendir my $dh,$keypath;
     while ($file = readdir($dh)) {
@@ -1267,8 +1274,8 @@ my $file;
                         last;
         }
     }
-print "cp $file /home/ubuntu\n";
-$exec=`cp $file /home/ubuntu/`;
+print "cp $file /home/root\n";
+$exec=`cp $file /home/root/`;
 update_ssh($file);
 }
 
@@ -1279,11 +1286,11 @@ my ($file)=@_;
 
 print "update file=$file\n";
 $file=~s/^.+\/(.+)$/$1/;
-$ffile="/home/ubuntu/$file";
+$ffile="/home/$REMOTE_USER/$file";
 print "upodating $ffile\n";
-`chown ubuntu.ubuntu $file`;
+`chown $REMOTE_USER.$REMOTE_USER $file`;
 `chmod 400 $file`;
-open(FH,"</home/ubuntu/iscale.manifest");
+open(FH,"</home/$REMOTE_USER/iscale.manifest");
 my $content='';
         while(<FH>){
                 if (/SSHKEY/)   {
@@ -1293,7 +1300,7 @@ my $content='';
                 $content.=$_;
         }
 close(FH);
-open(FH,">/home/ubuntu/iscale.manifest");
+open(FH,">/home/$REMOTE_USER/iscale.manifest");
 print FH $content;
 close (FH);
 }
