@@ -3,7 +3,10 @@ This recipe creates a scaledb system with 2 nodes.<BR>
 one is primary and the second is mirror.<BR>
 The system works with hp cloud<BR>
 Choose the hp-havana cloud on 13.5+ system<BR>
-<B>copy the pem file to the cloudify-overrides directory in addition to the upload directory without them pem suffix</B><BR>
+<B>copy the pem file to the cloudify-overrides directory in addition to the upload directory without the pem suffix</B><BR>
+Till the next version of cloudify (2.7.1+) there is a need to define for the ubuntu server in the hp-havana.groovy file <BR>
+username root instead of ubuntu<BR>
+RemoteDirectory /home/root/gs-files instead of /home/ubuntu/gs-files<BR>
 The system consists of 6 machines.<BR>
 2 CAS, 2SLM and 2 MySQL nodes which run on mariadb
 <P>Since the default memory allocation is 15GB of memory, you will only be able to run the system with machines of size 101
