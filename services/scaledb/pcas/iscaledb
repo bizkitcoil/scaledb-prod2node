@@ -916,7 +916,8 @@ scaledb_cas_config_ports = $CAS_port,$CAS_port";
 
 
 	`service iptables stop` if (! $FIREWALL);
-	`rm /etc/my.cnf`;
+	`rm /etc/my.cnf` if ( -e '/etc/my.cnf');
+	`rm /etc/mysql/my.cnf` if ( -e '/etc/mysql/my.cnf');
 	open(MSQL,">$install_dir/my.cnf") || die "Couldn't open $install_dir/my.cnf file for update !$\n$Abort";
 	print MSQL $sql_file;
 	close(MSQL);
@@ -1234,12 +1235,12 @@ chdir \"$install_dir/mysql\";
 \$pid=fork();
 if (\$pid==0){
 
-`$install_dir/mysql/bin/mysqld_safe --defaults-file=$install_dir/my.cnf`;
+`./bin/mysqld_safe --defaults-file=$install_dir/my.cnf`;
 }
 else{
         sleep 8;
- `$install_dir/mysql/bin/mysql -uroot -e \\\"GRANT all ON test.* to root@\\'%\\'\\\"`;
-        `$install_dir/mysql/bin/mysql -uroot -e \\\"INSTALL PLUGIN scaledb SONAME 'ha_scaledb.so'\\\"`;
+ `./bin/mysql -uroot -e \\\"GRANT all ON test.* to root@\\'%\\'\\\"`;
+        `./bin/mysql -uroot -e \\\"INSTALL PLUGIN scaledb SONAME 'ha_scaledb.so'\\\"`;
 
 }";
 		open(IDB,">$idbfile") || die "Couldn't create $dbfile db install file !$\n$Abort";
