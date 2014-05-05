@@ -13,6 +13,6 @@ unless you request a larger memory allocation<P>
 for 102 size machines you will need 6*4GB=24GB of memory<BR>
 for 103 size machines you will need 6*8GB=48GB of memory and so on <BR>
 To run tests on a fully operational system or if you have further questions contact<BR>
-To view a demo of the new high speed streaing data insertion view <A href://http://scaledb.com/streaming-table-video.html>Streaming Demo</A><BR>
 Make sure to run the recipe under an administrative user in the HP cloud<BR>
-info@bizkit.co.il for further details<BR>
+To view a demo of the new high speed streaming data insertion view <A href="http://scaledb.com/streaming-table-video.html">Streaming Demo</A><BR>
+Contact <A  href="mailto:info@bizkit.co.il?subject=Request for information">Bizkit</A>  for further details<BR>
